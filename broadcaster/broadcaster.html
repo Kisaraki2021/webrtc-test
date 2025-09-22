@@ -12,7 +12,9 @@
   <label>サーバーIP: <input id="serverHost" value="localhost"></label>
   <button id="startBtn">カメラ開始 & サーバ接続</button>
   <button id="stopBtn" disabled>配信停止</button>
+  <button id="switchCameraBtn" disabled>カメラ切替</button>
   <div id="status">未開始</div>
+  <div id="cameraInfo" style="margin: 5px 0; font-size: 14px; color: #666;">カメラ: 未選択</div>
   <div id="debug" style="background:#f0f0f0; padding:10px; margin:10px 0; font-size:12px;"></div>
   <video id="localVideo" autoplay playsinline muted style="width:320px;height:240px;background:#000"></video>
 
@@ -25,6 +27,8 @@
     let myId = null;
     let reconnectAttempts = 0;
     const maxReconnectAttempts = 3;
+    let currentCameraIndex = 0;
+    let availableCameras = [];
 
     function updateStatus(msg) {
       document.getElementById('status').textContent = msg;
@@ -35,13 +39,122 @@
       const debugDiv = document.getElementById('debug');
       const time = new Date().toLocaleTimeString();
       debugDiv.innerHTML += `<div>${time}: ${msg}</div>`;
-      debugDiv.scrollTop = debugDiv.scrollTop = debugDiv.scrollHeight;
+      debugDiv.scrollTop = debugDiv.scrollHeight;
       console.log('Debug:', msg);
     }
 
     function updateButtons(isStreaming) {
       document.getElementById('startBtn').disabled = isStreaming;
       document.getElementById('stopBtn').disabled = !isStreaming;
+      document.getElementById('switchCameraBtn').disabled = !isStreaming || availableCameras.length <= 1;
+    }
+
+    function updateCameraInfo() {
+      const infoDiv = document.getElementById('cameraInfo');
+      if (availableCameras.length > 0) {
+        const currentCamera = availableCameras[currentCameraIndex];
+        const facingMode = currentCamera.facingMode || '不明';
+        infoDiv.textContent = `カメラ: ${currentCamera.label || 'カメラ ' + (currentCameraIndex + 1)} (${facingMode})`;
+      } else {
+        infoDiv.textContent = 'カメラ: 未選択';
+      }
+    }
+
+    async function getAvailableCameras() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        availableCameras = devices
+          .filter(device => device.kind === 'videoinput')
+          .map((device, index) => ({
+            deviceId: device.deviceId,
+            label: device.label || `カメラ ${index + 1}`,
+            facingMode: device.label.toLowerCase().includes('front') || device.label.toLowerCase().includes('user') ? 'フロント' :
+              device.label.toLowerCase().includes('back') || device.label.toLowerCase().includes('environment') ? 'リア' : '不明'
+          }));
+
+        addDebugLog(`利用可能なカメラ: ${availableCameras.length}台`);
+        availableCameras.forEach((camera, index) => {
+          addDebugLog(`  ${index + 1}: ${camera.label} (${camera.facingMode})`);
+        });
+
+        return availableCameras;
+      } catch (error) {
+        console.error('カメラ列挙エラー:', error);
+        return [];
+      }
+    }
+
+    async function getCameraStream(cameraIndex = 0) {
+      const constraints = {
+        video: {
+          deviceId: availableCameras[cameraIndex] ? { exact: availableCameras[cameraIndex].deviceId } : undefined,
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 30, max: 30 }
+        },
+        audio: true
+      };
+
+      if (availableCameras.length === 0) {
+        // フォールバック: facingModeを使用
+        constraints.video = {
+          facingMode: cameraIndex === 0 ? 'user' : 'environment',
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+          frameRate: { ideal: 30, max: 30 }
+        };
+      }
+
+      return await navigator.mediaDevices.getUserMedia(constraints);
+    }
+
+    async function switchCamera() {
+      if (availableCameras.length <= 1) {
+        addDebugLog('切り替え可能なカメラがありません');
+        return;
+      }
+
+      try {
+        updateStatus('カメラを切り替え中...');
+        addDebugLog('カメラ切り替え開始');
+
+        // 次のカメラインデックス
+        currentCameraIndex = (currentCameraIndex + 1) % availableCameras.length;
+
+        // 現在のストリームを停止
+        if (localStream) {
+          localStream.getTracks().forEach(track => track.stop());
+        }
+
+        // 新しいカメラストリームを取得
+        localStream = await getCameraStream(currentCameraIndex);
+        document.getElementById('localVideo').srcObject = localStream;
+        updateCameraInfo();
+
+        // 既存の接続にトラックを更新
+        for (const [viewerId, pc] of pcMap) {
+          const videoSender = pc.getSenders().find(sender =>
+            sender.track && sender.track.kind === 'video'
+          );
+
+          if (videoSender) {
+            const newVideoTrack = localStream.getVideoTracks()[0];
+            await videoSender.replaceTrack(newVideoTrack);
+            addDebugLog(`視聴者 ${viewerId} のビデオトラックを更新`);
+          }
+        }
+
+        updateStatus('カメラ切り替え完了');
+        addDebugLog(`カメラを ${availableCameras[currentCameraIndex].label} に切り替えました`);
+
+      } catch (error) {
+        console.error('カメラ切り替えエラー:', error);
+        addDebugLog(`カメラ切り替えエラー: ${error.message}`);
+        updateStatus('カメラ切り替えエラー');
+
+        // エラー時は元のカメラに戻す
+        currentCameraIndex = (currentCameraIndex - 1 + availableCameras.length) % availableCameras.length;
+      }
     }
 
     function connectWebSocket() {
@@ -56,7 +169,6 @@
         addDebugLog('WebSocket接続が開かれました');
         reconnectAttempts = 0;
 
-        // 少し待ってから登録メッセージを送信
         setTimeout(() => {
           const registerMsg = JSON.stringify({ type: 'register', id: myId, role: 'broadcaster' });
           addDebugLog(`登録メッセージ送信: ${registerMsg}`);
@@ -141,6 +253,11 @@
         ws = null;
       }
 
+      // カメラ情報をリセット
+      availableCameras = [];
+      currentCameraIndex = 0;
+      updateCameraInfo();
+
       updateStatus('配信停止完了');
       updateButtons(false);
       addDebugLog('配信停止処理完了');
@@ -151,20 +268,17 @@
         myId = document.getElementById('myId').value || 'broadcaster1';
         addDebugLog(`開始 - ID: ${myId}`);
 
+        updateStatus('カメラデバイスを検索中...');
+
+        // 利用可能なカメラを取得
+        await getAvailableCameras();
+
         updateStatus('カメラにアクセス中...');
 
-        // カメラアクセスの詳細設定
-        const constraints = {
-          video: {
-            width: { ideal: 640 },
-            height: { ideal: 480 },
-            frameRate: { ideal: 30, max: 30 }
-          },
-          audio: true
-        };
-
-        localStream = await navigator.mediaDevices.getUserMedia(constraints);
+        localStream = await getCameraStream(currentCameraIndex);
         document.getElementById('localVideo').srcObject = localStream;
+        updateCameraInfo();
+
         addDebugLog(`カメラアクセス成功 - ビデオ: ${localStream.getVideoTracks().length}トラック, オーディオ: ${localStream.getAudioTracks().length}トラック`);
         updateStatus('カメラ開始完了。サーバーに接続中...');
         updateButtons(true);
@@ -181,6 +295,10 @@
 
     document.getElementById('stopBtn').onclick = () => {
       stopStreaming();
+    };
+
+    document.getElementById('switchCameraBtn').onclick = () => {
+      switchCamera();
     };
 
     async function createOfferForViewer(viewerId) {
