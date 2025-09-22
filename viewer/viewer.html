@@ -11,10 +11,11 @@
     <label>あなたのID: <input id="myId" value="viewer1"></label>
     <label>見る相手のID: <input id="targetId" value="broadcaster1"></label>
     <button id="connectBtn">接続要求</button>
+    <div id="status">未接続</div>
     <video id="remoteVideo" autoplay playsinline style="width:480px;height:360px;background:#000"></video>
 
     <script>
-        const wsUrl = 'ws://localhost:3000';
+        const wsUrl = 'wss://localhost:3000';
         const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
         let ws = null;
@@ -22,39 +23,88 @@
         let myId = null;
         let targetId = null;
 
+        function updateStatus(msg) {
+            document.getElementById('status').textContent = msg;
+            console.log('Status:', msg);
+        }
+
         document.getElementById('connectBtn').onclick = () => {
             myId = document.getElementById('myId').value || 'viewer1';
             targetId = document.getElementById('targetId').value || 'broadcaster1';
+
+            updateStatus('WebSocketに接続中...');
             ws = new WebSocket(wsUrl);
+
             ws.onopen = () => {
+                updateStatus('WebSocket接続完了。登録中...');
                 ws.send(JSON.stringify({ type: 'register', id: myId, role: 'viewer' }));
                 // ask broadcaster to create offer for us
+                updateStatus('配信者に接続要求を送信...');
                 ws.send(JSON.stringify({ target: targetId, kind: 'viewer-join', payload: null }));
             };
+
             ws.onmessage = async (ev) => {
                 const msg = JSON.parse(ev.data);
+                console.log('受信メッセージ:', msg);
+
                 if (msg.payload && msg.kind === 'offer') {
+                    updateStatus('Offerを受信。応答中...');
                     await handleOffer(msg.from, msg.payload);
                 } else if (msg.payload && msg.kind === 'candidate') {
+                    console.log('ICE候補を受信:', msg.payload);
                     if (pc) pc.addIceCandidate(new RTCIceCandidate(msg.payload));
                 }
+            };
+
+            ws.onerror = (error) => {
+                console.error('WebSocketエラー:', error);
+                updateStatus('WebSocket接続エラー');
+            };
+
+            ws.onclose = () => {
+                updateStatus('WebSocket接続が閉じられました');
             };
         };
 
         async function handleOffer(fromId, offer) {
+            console.log('Offerを処理中:', offer);
+            updateStatus('PeerConnection作成中...');
+
             pc = new RTCPeerConnection(configuration);
+
             pc.ontrack = (e) => {
+                console.log('トラックを受信:', e.streams);
+                updateStatus('映像ストリーム受信中');
                 document.getElementById('remoteVideo').srcObject = e.streams[0];
             };
+
             pc.onicecandidate = (e) => {
                 if (e.candidate) {
+                    console.log('ICE候補を送信:', e.candidate);
                     ws.send(JSON.stringify({ target: fromId, kind: 'candidate', payload: e.candidate }));
                 }
             };
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            ws.send(JSON.stringify({ target: fromId, kind: 'answer', payload: pc.localDescription }));
+
+            pc.onconnectionstatechange = () => {
+                console.log('接続状態:', pc.connectionState);
+                updateStatus(`接続状態: ${pc.connectionState}`);
+            };
+
+            pc.oniceconnectionstatechange = () => {
+                console.log('ICE接続状態:', pc.iceConnectionState);
+            };
+
+            try {
+                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                console.log('Answerを送信:', answer);
+                ws.send(JSON.stringify({ target: fromId, kind: 'answer', payload: pc.localDescription }));
+                updateStatus('Answerを送信完了');
+            } catch (error) {
+                console.error('Offer処理エラー:', error);
+                updateStatus('接続エラー: ' + error.message);
+            }
         }
     </script>
 </body>

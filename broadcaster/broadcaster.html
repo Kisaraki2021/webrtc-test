@@ -1,61 +1,103 @@
 <!-- broadcaster.html -->
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Broadcaster</title></head>
+
+<head>
+  <meta charset="utf-8">
+  <title>Broadcaster</title>
+</head>
+
 <body>
   <label>あなたのID: <input id="myId" value="broadcaster1"></label>
   <button id="startBtn">カメラ開始 & サーバ接続</button>
+  <div id="status">未開始</div>
   <video id="localVideo" autoplay playsinline muted style="width:320px;height:240px;background:#000"></video>
 
-<script>
-const wsUrl = 'ws://localhost:3000';
-const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
+  <script>
+    const wsUrl = 'wss://localhost:3000';
+    const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
-let pcMap = new Map(); // viewerId -> RTCPeerConnection
-let localStream = null;
-let ws = null;
-let myId = null;
+    let pcMap = new Map(); // viewerId -> RTCPeerConnection
+    let localStream = null;
+    let ws = null;
+    let myId = null;
 
-document.getElementById('startBtn').onclick = async () => {
-  myId = document.getElementById('myId').value || 'broadcaster1';
-  localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-  document.getElementById('localVideo').srcObject = localStream;
-
-  ws = new WebSocket(wsUrl);
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'register', id: myId, role: 'broadcaster' }));
-  };
-  ws.onmessage = async (ev) => {
-    const msg = JSON.parse(ev.data);
-    if(msg.kind === 'viewer-join'){ // viewer asks to start
-      const viewerId = msg.from;
-      await createOfferForViewer(viewerId);
-    } else if(msg.payload && msg.kind === 'answer'){
-      const viewerId = msg.from;
-      const pc = pcMap.get(viewerId);
-      if(!pc) return;
-      await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
-    } else if(msg.payload && msg.kind === 'candidate'){
-      const pc = pcMap.get(msg.from);
-      if(pc) pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+    function updateStatus(msg) {
+      document.getElementById('status').textContent = msg;
+      console.log('Status:', msg);
     }
-  };
-};
 
-async function createOfferForViewer(viewerId){
-  const pc = new RTCPeerConnection(configuration);
-  // send local tracks
-  for(const t of localStream.getTracks()) pc.addTrack(t, localStream);
-  pc.onicecandidate = (e) => {
-    if(e.candidate){
-      ws.send(JSON.stringify({ target: viewerId, kind: 'candidate', payload: e.candidate }));
+    document.getElementById('startBtn').onclick = async () => {
+      try {
+        myId = document.getElementById('myId').value || 'broadcaster1';
+
+        updateStatus('カメラにアクセス中...');
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('localVideo').srcObject = localStream;
+        updateStatus('カメラ開始完了。サーバーに接続中...');
+
+        ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+          updateStatus('サーバー接続完了。配信準備完了');
+          ws.send(JSON.stringify({ type: 'register', id: myId, role: 'broadcaster' }));
+        };
+        ws.onmessage = async (ev) => {
+          const msg = JSON.parse(ev.data);
+          console.log('受信メッセージ:', msg);
+
+          if (msg.kind === 'viewer-join') { // viewer asks to start
+            const viewerId = msg.from;
+            updateStatus(`視聴者 ${viewerId} が参加。接続中...`);
+            await createOfferForViewer(viewerId);
+          } else if (msg.payload && msg.kind === 'answer') {
+            const viewerId = msg.from;
+            console.log(`${viewerId} からAnswerを受信:`, msg.payload);
+            const pc = pcMap.get(viewerId);
+            if (!pc) return;
+            await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+            updateStatus(`視聴者 ${viewerId} と接続完了`);
+          } else if (msg.payload && msg.kind === 'candidate') {
+            const pc = pcMap.get(msg.from);
+            if (pc) {
+              console.log('ICE候補を受信:', msg.payload);
+              pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+            }
+          }
+        };
+      } catch (error) {
+        console.error('エラー:', error);
+        updateStatus('エラー: ' + error.message);
+      }
+    };
+
+    async function createOfferForViewer(viewerId) {
+      console.log(`視聴者 ${viewerId} 用のOfferを作成中`);
+      const pc = new RTCPeerConnection(configuration);
+
+      // send local tracks
+      for (const t of localStream.getTracks()) {
+        console.log('トラックを追加:', t.kind);
+        pc.addTrack(t, localStream);
+      }
+
+      pc.onicecandidate = (e) => {
+        if (e.candidate) {
+          console.log('ICE候補を送信:', e.candidate);
+          ws.send(JSON.stringify({ target: viewerId, kind: 'candidate', payload: e.candidate }));
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log(`${viewerId} 接続状態:`, pc.connectionState);
+      };
+
+      pcMap.set(viewerId, pc);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      console.log(`${viewerId} にOfferを送信:`, offer);
+      ws.send(JSON.stringify({ target: viewerId, kind: 'offer', payload: pc.localDescription }));
     }
-  };
-  pcMap.set(viewerId, pc);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  ws.send(JSON.stringify({ target: viewerId, kind: 'offer', payload: pc.localDescription }));
-}
-</script>
+  </script>
 </body>
+
 </html>
