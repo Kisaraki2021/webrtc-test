@@ -9,13 +9,13 @@
 
 <body>
   <label>あなたのID: <input id="myId" value="broadcaster1"></label>
+  <label>サーバーIP: <input id="serverHost" value="localhost"></label>
   <button id="startBtn">カメラ開始 & サーバ接続</button>
   <div id="status">未開始</div>
   <div id="debug" style="background:#f0f0f0; padding:10px; margin:10px 0; font-size:12px;"></div>
   <video id="localVideo" autoplay playsinline muted style="width:320px;height:240px;background:#000"></video>
 
   <script>
-    const wsUrl = 'wss://localhost:3000';
     const configuration = { iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] };
 
     let pcMap = new Map(); // viewerId -> RTCPeerConnection
@@ -39,6 +39,9 @@
     }
 
     function connectWebSocket() {
+      const serverHost = document.getElementById('serverHost').value || 'localhost';
+      const wsUrl = `wss://${serverHost}:3000`;
+
       addDebugLog(`WebSocket接続試行... (${wsUrl})`);
       ws = new WebSocket(wsUrl);
 

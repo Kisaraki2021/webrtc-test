@@ -2,12 +2,41 @@ const WebSocket = require('ws');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
-// SSL証明書を読み込み
-const options = {
-    key: fs.readFileSync(path.join(__dirname, '..', 'key.pem')),
-    cert: fs.readFileSync(path.join(__dirname, '..', 'cert.pem'))
-};
+// ローカルIPアドレスを取得
+function getLocalIP() {
+    const interfaces = os.networkInterfaces();
+    for (const name of Object.keys(interfaces)) {
+        for (const iface of interfaces[name]) {
+            if (iface.family === 'IPv4' && !iface.internal) {
+                return iface.address;
+            }
+        }
+    }
+    return '127.0.0.1';
+}
+
+const localIP = getLocalIP();
+console.log('検出されたローカルIP:', localIP);
+
+// SSL証明書を読み込み（LAN用がある場合はそちらを優先）
+let options;
+try {
+    // LAN用証明書を試行
+    options = {
+        key: fs.readFileSync(path.join(__dirname, '..', 'key-lan.pem')),
+        cert: fs.readFileSync(path.join(__dirname, '..', 'cert-lan.pem'))
+    };
+    console.log('LAN用証明書を使用');
+} catch (e) {
+    // フォールバック：既存の証明書
+    options = {
+        key: fs.readFileSync(path.join(__dirname, '..', 'key.pem')),
+        cert: fs.readFileSync(path.join(__dirname, '..', 'cert.pem'))
+    };
+    console.log('既存証明書を使用（localhost専用）');
+}
 
 // HTTPS サーバーを作成
 const server = https.createServer(options, (req, res) => {
@@ -18,18 +47,20 @@ const server = https.createServer(options, (req, res) => {
             <head><title>WebSocket接続テスト</title></head>
             <body>
                 <h1>WebSocket接続テスト (HTTPS)</h1>
-                <button onclick="testConnection()">接続テスト</button>
+                <p>サーバーIP: ${localIP}</p>
+                <button onclick="testConnection('localhost')">localhost接続テスト</button>
+                <button onclick="testConnection('${localIP}')">LAN IP接続テスト</button>
                 <div id="log"></div>
                 <script>
                 function log(msg) {
                     document.getElementById('log').innerHTML += '<div>' + new Date().toLocaleTimeString() + ': ' + msg + '</div>';
                 }
-                function testConnection() {
-                    log('WebSocket接続を試行中...');
-                    const ws = new WebSocket('wss://localhost:3000');
-                    ws.onopen = () => log('✅ WebSocket接続成功!');
-                    ws.onerror = (e) => log('❌ WebSocket接続エラー: ' + e);
-                    ws.onclose = () => log('WebSocket接続が閉じられました');
+                function testConnection(host) {
+                    log('WebSocket接続を試行中... (' + host + ')');
+                    const ws = new WebSocket('wss://' + host + ':3000');
+                    ws.onopen = () => log('✅ WebSocket接続成功! (' + host + ')');
+                    ws.onerror = (e) => log('❌ WebSocket接続エラー: ' + e + ' (' + host + ')');
+                    ws.onclose = (e) => log('WebSocket接続が閉じられました (コード:' + e.code + ') (' + host + ')');
                 }
                 </script>
             </body>
@@ -85,8 +116,9 @@ wss.on('connection', (ws) => {
     });
 });
 
-server.listen(3000, () => {
-    console.log('HTTPS + WebSocket サーバーが https://localhost:3000 で起動しました');
-    console.log('接続テスト: https://localhost:3000 にアクセスしてください');
+server.listen(3000, '0.0.0.0', () => {
+    console.log('HTTPS + WebSocket サーバーが起動しました');
+    console.log(`- ローカル: https://localhost:3000`);
+    console.log(`- LAN: https://${localIP}:3000`);
     console.log('注意: 自己署名証明書のため、ブラウザで「詳細設定」→「安全ではないページに移動」をクリックしてください');
 });
