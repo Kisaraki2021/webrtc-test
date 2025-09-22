@@ -33,13 +33,16 @@
             targetId = document.getElementById('targetId').value || 'broadcaster1';
 
             updateStatus('WebSocketに接続中...');
+            console.log(`接続試行: ${wsUrl}`);
             ws = new WebSocket(wsUrl);
 
             ws.onopen = () => {
                 updateStatus('WebSocket接続完了。登録中...');
+                console.log('WebSocket接続が開かれました');
                 ws.send(JSON.stringify({ type: 'register', id: myId, role: 'viewer' }));
                 // ask broadcaster to create offer for us
                 updateStatus('配信者に接続要求を送信...');
+                console.log(`配信者 ${targetId} に接続要求を送信`);
                 ws.send(JSON.stringify({ target: targetId, kind: 'viewer-join', payload: null }));
             };
 

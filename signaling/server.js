@@ -1,7 +1,30 @@
 // server.js
 // 実行: npm init -y && npm install ws
 const WebSocket = require('ws');
-const wss = new WebSocket.Server({ port: 3000 });
+const https = require('https');
+const fs = require('fs');
+const path = require('path');
+
+// SSL証明書を読み込み
+const options = {
+    key: fs.readFileSync(path.join(__dirname, '..', 'key.pem')),
+    cert: fs.readFileSync(path.join(__dirname, '..', 'cert.pem'))
+};
+
+// HTTPS サーバーを作成
+const server = https.createServer(options, (req, res) => {
+    // 簡単なヘルスチェックエンドポイント
+    if (req.url === '/') {
+        res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+        res.end('WebRTC Signaling Server is running');
+    } else {
+        res.writeHead(404);
+        res.end('Not Found');
+    }
+});
+
+// WebSocket サーバーをHTTPSサーバーにアタッチ
+const wss = new WebSocket.Server({ server });
 
 const clients = new Map(); // id -> { ws, role }
 
@@ -66,5 +89,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-console.log('Signaling server running on ws://localhost:3000');
-console.log('接続テスト用URL: http://localhost:3000 でアクセスしてみてください');
+server.listen(3000, () => {
+    console.log('HTTPS WebRTC Signaling server running on https://localhost:3000');
+    console.log('接続確認: https://localhost:3000 でアクセスしてみてください');
+});

@@ -37,10 +37,14 @@
         updateStatus('カメラ開始完了。サーバーに接続中...');
 
         ws = new WebSocket(wsUrl);
+
         ws.onopen = () => {
-          updateStatus('サーバー接続完了。配信準備完了');
+          updateStatus('WebSocket接続完了。登録中...');
+          console.log('WebSocket接続が開かれました');
           ws.send(JSON.stringify({ type: 'register', id: myId, role: 'broadcaster' }));
+          updateStatus('サーバー登録完了。配信準備完了');
         };
+
         ws.onmessage = async (ev) => {
           const msg = JSON.parse(ev.data);
           console.log('受信メッセージ:', msg);
@@ -64,6 +68,17 @@
             }
           }
         };
+
+        ws.onerror = (error) => {
+          console.error('WebSocketエラー:', error);
+          updateStatus('WebSocket接続エラー');
+        };
+
+        ws.onclose = (event) => {
+          console.log('WebSocket接続が閉じられました:', event.code, event.reason);
+          updateStatus('WebSocket接続が閉じられました');
+        };
+
       } catch (error) {
         console.error('エラー:', error);
         updateStatus('エラー: ' + error.message);
