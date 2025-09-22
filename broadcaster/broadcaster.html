@@ -11,6 +11,7 @@
   <label>あなたのID: <input id="myId" value="broadcaster1"></label>
   <label>サーバーIP: <input id="serverHost" value="localhost"></label>
   <button id="startBtn">カメラ開始 & サーバ接続</button>
+  <button id="stopBtn" disabled>配信停止</button>
   <div id="status">未開始</div>
   <div id="debug" style="background:#f0f0f0; padding:10px; margin:10px 0; font-size:12px;"></div>
   <video id="localVideo" autoplay playsinline muted style="width:320px;height:240px;background:#000"></video>
@@ -34,8 +35,13 @@
       const debugDiv = document.getElementById('debug');
       const time = new Date().toLocaleTimeString();
       debugDiv.innerHTML += `<div>${time}: ${msg}</div>`;
-      debugDiv.scrollTop = debugDiv.scrollHeight;
+      debugDiv.scrollTop = debugDiv.scrollTop = debugDiv.scrollHeight;
       console.log('Debug:', msg);
+    }
+
+    function updateButtons(isStreaming) {
+      document.getElementById('startBtn').disabled = isStreaming;
+      document.getElementById('stopBtn').disabled = !isStreaming;
     }
 
     function connectWebSocket() {
@@ -93,18 +99,51 @@
         console.log('WebSocket接続が閉じられました:', event.code, event.reason);
         addDebugLog(`WebSocket接続が閉じられました - コード: ${event.code}, 理由: ${event.reason || 'なし'}`);
         updateStatus('WebSocket接続が閉じられました');
-
-        // 自動再接続を試行
-        if (reconnectAttempts < maxReconnectAttempts && localStream) {
-          reconnectAttempts++;
-          addDebugLog(`再接続試行 ${reconnectAttempts}/${maxReconnectAttempts} を3秒後に開始`);
-          setTimeout(() => {
-            connectWebSocket();
-          }, 3000);
-        } else if (reconnectAttempts >= maxReconnectAttempts) {
-          addDebugLog('最大再接続試行回数に達しました。手動で再接続してください。');
-        }
+        updateButtons(false);
       };
+    }
+
+    function stopStreaming() {
+      addDebugLog('配信停止処理を開始');
+
+      // すべてのPeerConnection接続を閉じる
+      for (const [viewerId, pc] of pcMap) {
+        addDebugLog(`視聴者 ${viewerId} との接続を閉じます`);
+        pc.close();
+      }
+      pcMap.clear();
+
+      // 視聴者に配信停止を通知
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          broadcast: 'viewer',
+          kind: 'stream-ended',
+          payload: null
+        }));
+        addDebugLog('視聴者に配信停止を通知');
+      }
+
+      // ローカルストリームを停止
+      if (localStream) {
+        localStream.getTracks().forEach(track => {
+          addDebugLog(`トラックを停止: ${track.kind}`);
+          track.stop();
+        });
+        localStream = null;
+      }
+
+      // ビデオ要素をクリア
+      document.getElementById('localVideo').srcObject = null;
+
+      // WebSocket接続を閉じる
+      if (ws) {
+        ws.close();
+        ws = null;
+      }
+
+      updateStatus('配信停止完了');
+      updateButtons(false);
+      addDebugLog('配信停止処理完了');
     }
 
     document.getElementById('startBtn').onclick = async () => {
@@ -128,6 +167,7 @@
         document.getElementById('localVideo').srcObject = localStream;
         addDebugLog(`カメラアクセス成功 - ビデオ: ${localStream.getVideoTracks().length}トラック, オーディオ: ${localStream.getAudioTracks().length}トラック`);
         updateStatus('カメラ開始完了。サーバーに接続中...');
+        updateButtons(true);
 
         connectWebSocket();
 
@@ -135,7 +175,12 @@
         console.error('エラー:', error);
         addDebugLog(`初期化エラー: ${error.message}`);
         updateStatus('エラー: ' + error.message);
+        updateButtons(false);
       }
+    };
+
+    document.getElementById('stopBtn').onclick = () => {
+      stopStreaming();
     };
 
     async function createOfferForViewer(viewerId) {

@@ -12,6 +12,7 @@
     <label>見る相手のID: <input id="targetId" value="broadcaster1"></label>
     <label>サーバーIP: <input id="serverHost" value="localhost"></label>
     <button id="connectBtn">接続要求</button>
+    <button id="disconnectBtn" disabled>接続終了</button>
     <div id="status">未接続</div>
     <video id="remoteVideo" autoplay playsinline style="width:480px;height:360px;background:#000"></video>
 
@@ -28,6 +29,33 @@
             console.log('Status:', msg);
         }
 
+        function updateButtons(isConnected) {
+            document.getElementById('connectBtn').disabled = isConnected;
+            document.getElementById('disconnectBtn').disabled = !isConnected;
+        }
+
+        function disconnectViewer() {
+            console.log('視聴者側で接続を終了');
+
+            // PeerConnection接続を閉じる
+            if (pc) {
+                pc.close();
+                pc = null;
+            }
+
+            // ビデオ要素をクリア
+            document.getElementById('remoteVideo').srcObject = null;
+
+            // WebSocket接続を閉じる
+            if (ws) {
+                ws.close();
+                ws = null;
+            }
+
+            updateStatus('接続終了');
+            updateButtons(false);
+        }
+
         document.getElementById('connectBtn').onclick = () => {
             myId = document.getElementById('myId').value || 'viewer1';
             targetId = document.getElementById('targetId').value || 'broadcaster1';
@@ -42,10 +70,10 @@
                 updateStatus('WebSocket接続完了。登録中...');
                 console.log('WebSocket接続が開かれました');
                 ws.send(JSON.stringify({ type: 'register', id: myId, role: 'viewer' }));
-                // ask broadcaster to create offer for us
                 updateStatus('配信者に接続要求を送信...');
                 console.log(`配信者 ${targetId} に接続要求を送信`);
                 ws.send(JSON.stringify({ target: targetId, kind: 'viewer-join', payload: null }));
+                updateButtons(true);
             };
 
             ws.onmessage = async (ev) => {
@@ -58,17 +86,32 @@
                 } else if (msg.payload && msg.kind === 'candidate') {
                     console.log('ICE候補を受信:', msg.payload);
                     if (pc) pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+                } else if (msg.kind === 'stream-ended') {
+                    console.log('配信者が配信を終了しました');
+                    updateStatus('配信が終了されました');
+                    document.getElementById('remoteVideo').srcObject = null;
+                    if (pc) {
+                        pc.close();
+                        pc = null;
+                    }
+                    updateButtons(false);
                 }
             };
 
             ws.onerror = (error) => {
                 console.error('WebSocketエラー:', error);
                 updateStatus('WebSocket接続エラー');
+                updateButtons(false);
             };
 
             ws.onclose = () => {
                 updateStatus('WebSocket接続が閉じられました');
+                updateButtons(false);
             };
+        };
+
+        document.getElementById('disconnectBtn').onclick = () => {
+            disconnectViewer();
         };
 
         async function handleOffer(fromId, offer) {
@@ -93,6 +136,12 @@
             pc.onconnectionstatechange = () => {
                 console.log('接続状態:', pc.connectionState);
                 updateStatus(`接続状態: ${pc.connectionState}`);
+
+                if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+                    updateStatus('接続が切断されました');
+                    document.getElementById('remoteVideo').srcObject = null;
+                    updateButtons(false);
+                }
             };
 
             pc.oniceconnectionstatechange = () => {
