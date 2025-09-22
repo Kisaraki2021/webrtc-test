@@ -11,6 +11,7 @@
   <label>あなたのID: <input id="myId" value="broadcaster1"></label>
   <button id="startBtn">カメラ開始 & サーバ接続</button>
   <div id="status">未開始</div>
+  <div id="debug" style="background:#f0f0f0; padding:10px; margin:10px 0; font-size:12px;"></div>
   <video id="localVideo" autoplay playsinline muted style="width:320px;height:240px;background:#000"></video>
 
   <script>
@@ -21,95 +22,144 @@
     let localStream = null;
     let ws = null;
     let myId = null;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 3;
 
     function updateStatus(msg) {
       document.getElementById('status').textContent = msg;
       console.log('Status:', msg);
     }
 
+    function addDebugLog(msg) {
+      const debugDiv = document.getElementById('debug');
+      const time = new Date().toLocaleTimeString();
+      debugDiv.innerHTML += `<div>${time}: ${msg}</div>`;
+      debugDiv.scrollTop = debugDiv.scrollHeight;
+      console.log('Debug:', msg);
+    }
+
+    function connectWebSocket() {
+      addDebugLog(`WebSocket接続試行... (${wsUrl})`);
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        updateStatus('WebSocket接続完了。登録中...');
+        addDebugLog('WebSocket接続が開かれました');
+        reconnectAttempts = 0;
+
+        // 少し待ってから登録メッセージを送信
+        setTimeout(() => {
+          const registerMsg = JSON.stringify({ type: 'register', id: myId, role: 'broadcaster' });
+          addDebugLog(`登録メッセージ送信: ${registerMsg}`);
+          ws.send(registerMsg);
+          updateStatus('サーバー登録完了。配信準備完了');
+        }, 100);
+      };
+
+      ws.onmessage = async (ev) => {
+        const msg = JSON.parse(ev.data);
+        addDebugLog(`受信メッセージ: ${JSON.stringify(msg)}`);
+
+        if (msg.kind === 'viewer-join') { // viewer asks to start
+          const viewerId = msg.from;
+          updateStatus(`視聴者 ${viewerId} が参加。接続中...`);
+          await createOfferForViewer(viewerId);
+        } else if (msg.payload && msg.kind === 'answer') {
+          const viewerId = msg.from;
+          addDebugLog(`${viewerId} からAnswerを受信`);
+          const pc = pcMap.get(viewerId);
+          if (!pc) return;
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
+          updateStatus(`視聴者 ${viewerId} と接続完了`);
+        } else if (msg.payload && msg.kind === 'candidate') {
+          const pc = pcMap.get(msg.from);
+          if (pc) {
+            addDebugLog(`ICE候補を受信: ${msg.from}`);
+            pc.addIceCandidate(new RTCIceCandidate(msg.payload));
+          }
+        }
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocketエラー:', error);
+        addDebugLog(`WebSocketエラー: ${error.type || 'unknown'}`);
+        updateStatus('WebSocket接続エラー');
+      };
+
+      ws.onclose = (event) => {
+        console.log('WebSocket接続が閉じられました:', event.code, event.reason);
+        addDebugLog(`WebSocket接続が閉じられました - コード: ${event.code}, 理由: ${event.reason || 'なし'}`);
+        updateStatus('WebSocket接続が閉じられました');
+
+        // 自動再接続を試行
+        if (reconnectAttempts < maxReconnectAttempts && localStream) {
+          reconnectAttempts++;
+          addDebugLog(`再接続試行 ${reconnectAttempts}/${maxReconnectAttempts} を3秒後に開始`);
+          setTimeout(() => {
+            connectWebSocket();
+          }, 3000);
+        } else if (reconnectAttempts >= maxReconnectAttempts) {
+          addDebugLog('最大再接続試行回数に達しました。手動で再接続してください。');
+        }
+      };
+    }
+
     document.getElementById('startBtn').onclick = async () => {
       try {
         myId = document.getElementById('myId').value || 'broadcaster1';
+        addDebugLog(`開始 - ID: ${myId}`);
 
         updateStatus('カメラにアクセス中...');
-        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+        // カメラアクセスの詳細設定
+        const constraints = {
+          video: {
+            width: { ideal: 640 },
+            height: { ideal: 480 },
+            frameRate: { ideal: 30, max: 30 }
+          },
+          audio: true
+        };
+
+        localStream = await navigator.mediaDevices.getUserMedia(constraints);
         document.getElementById('localVideo').srcObject = localStream;
+        addDebugLog(`カメラアクセス成功 - ビデオ: ${localStream.getVideoTracks().length}トラック, オーディオ: ${localStream.getAudioTracks().length}トラック`);
         updateStatus('カメラ開始完了。サーバーに接続中...');
 
-        ws = new WebSocket(wsUrl);
-
-        ws.onopen = () => {
-          updateStatus('WebSocket接続完了。登録中...');
-          console.log('WebSocket接続が開かれました');
-          ws.send(JSON.stringify({ type: 'register', id: myId, role: 'broadcaster' }));
-          updateStatus('サーバー登録完了。配信準備完了');
-        };
-
-        ws.onmessage = async (ev) => {
-          const msg = JSON.parse(ev.data);
-          console.log('受信メッセージ:', msg);
-
-          if (msg.kind === 'viewer-join') { // viewer asks to start
-            const viewerId = msg.from;
-            updateStatus(`視聴者 ${viewerId} が参加。接続中...`);
-            await createOfferForViewer(viewerId);
-          } else if (msg.payload && msg.kind === 'answer') {
-            const viewerId = msg.from;
-            console.log(`${viewerId} からAnswerを受信:`, msg.payload);
-            const pc = pcMap.get(viewerId);
-            if (!pc) return;
-            await pc.setRemoteDescription(new RTCSessionDescription(msg.payload));
-            updateStatus(`視聴者 ${viewerId} と接続完了`);
-          } else if (msg.payload && msg.kind === 'candidate') {
-            const pc = pcMap.get(msg.from);
-            if (pc) {
-              console.log('ICE候補を受信:', msg.payload);
-              pc.addIceCandidate(new RTCIceCandidate(msg.payload));
-            }
-          }
-        };
-
-        ws.onerror = (error) => {
-          console.error('WebSocketエラー:', error);
-          updateStatus('WebSocket接続エラー');
-        };
-
-        ws.onclose = (event) => {
-          console.log('WebSocket接続が閉じられました:', event.code, event.reason);
-          updateStatus('WebSocket接続が閉じられました');
-        };
+        connectWebSocket();
 
       } catch (error) {
         console.error('エラー:', error);
+        addDebugLog(`初期化エラー: ${error.message}`);
         updateStatus('エラー: ' + error.message);
       }
     };
 
     async function createOfferForViewer(viewerId) {
-      console.log(`視聴者 ${viewerId} 用のOfferを作成中`);
+      addDebugLog(`視聴者 ${viewerId} 用のOfferを作成中`);
       const pc = new RTCPeerConnection(configuration);
 
       // send local tracks
       for (const t of localStream.getTracks()) {
-        console.log('トラックを追加:', t.kind);
+        addDebugLog(`トラックを追加: ${t.kind} - ${t.label}`);
         pc.addTrack(t, localStream);
       }
 
       pc.onicecandidate = (e) => {
         if (e.candidate) {
-          console.log('ICE候補を送信:', e.candidate);
+          addDebugLog(`ICE候補を送信: ${viewerId}`);
           ws.send(JSON.stringify({ target: viewerId, kind: 'candidate', payload: e.candidate }));
         }
       };
 
       pc.onconnectionstatechange = () => {
-        console.log(`${viewerId} 接続状態:`, pc.connectionState);
+        addDebugLog(`${viewerId} 接続状態: ${pc.connectionState}`);
       };
 
       pcMap.set(viewerId, pc);
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
-      console.log(`${viewerId} にOfferを送信:`, offer);
+      addDebugLog(`${viewerId} にOfferを送信`);
       ws.send(JSON.stringify({ target: viewerId, kind: 'offer', payload: pc.localDescription }));
     }
   </script>
