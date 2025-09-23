@@ -1,0 +1,9 @@
+# SSL証明書ファイルを無視
+*.key
+*.crt
+*.pem
+*.csr
+*.pfx
+*.cer
+ssl/
+certs/
